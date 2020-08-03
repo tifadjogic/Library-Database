@@ -1,0 +1,151 @@
+CREATE OR REPLACE PACKAGE Library_package AS
+
+FUNCTION showInfo(m_id IN NUMBER) RETURN VARCHAR2;
+FUNCTION showBook (m_id IN NUMBER) RETURN VARCHAR2;
+FUNCTION isBorrowed (c_id IN NUMBER) RETURN VARCHAR2;
+PROCEDURE extendMembership (m_id IN NUMBER);
+PROCEDURE updateDeathDate (newDate DATE, a_id NUMBER);
+PROCEDURE RENEW (l_id NUMBER);
+PROCEDURE return_copy (l_id NUMBER);
+FUNCTION new_book_loan (c_id IN NUMBER, u_id IN NUMBER, b_title VARCHAR2) RETURN VARCHAR2;
+END Library_package;
+
+/
+CREATE OR REPLACE PACKAGE BODY Library_package AS
+ FUNCTION showInfo(m_id IN NUMBER) RETURN VARCHAR2 IS
+mem member_type;
+str VARCHAR2(3000);
+BEGIN
+BEGIN
+SELECT VALUE (U) INTO mem FROM MEMBER_TABLE U WHERE U.member_id=m_id;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+raise_application_error  (-20004, 'Error: User code ' ||
+m_id || ' does not exist');
+END;
+str:=mem.showInfo();
+RETURN str;
+END showInfo;
+
+FUNCTION showBook (m_id IN NUMBER) RETURN VARCHAR2 IS
+l_user user_type;
+str VARCHAR2(100);
+BEGIN 
+BEGIN
+SELECT TREAT (VALUE (U)AS user_type) INTO l_user FROM MEMBER_TABLE U WHERE U.member_id=m_id;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+raise_application_error  (-20004, 'Error: User code ' ||
+m_id || ' does not exist');
+END;
+str:=l_user.showBook();
+RETURN str;
+END showBook;
+
+ FUNCTION isBorrowed (c_id IN NUMBER) RETURN VARCHAR2 IS
+l_copy copy_type;
+str VARCHAR2(50);
+BEGIN 
+BEGIN
+SELECT VALUE (C) INTO l_copy FROM COPY_TABLE C WHERE C.copy_id=c_id;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+raise_application_error  (-20004, 'Error: Copy code ' ||
+c_id || ' does not exist');
+END;
+str:=l_copy.isBorrowed();
+RETURN str;
+END isBorrowed;
+
+PROCEDURE extendMembership (m_id IN NUMBER) IS 
+l_user user_type;
+BEGIN
+SELECT TREAT(VALUE(M) as user_type) INTO l_user FROM member_table M
+WHERE M.member_id =m_id;
+l_user.membership_end_date:=SYSDATE+365;
+UPDATE MEMBER_TABLE m SET VALUE(m)=l_user  WHERE m.member_id=m_id;
+END extendMembership;
+
+PROCEDURE updateDeathDate (newDate DATE, a_id NUMBER) IS
+BEGIN
+  UPDATE AUTHOR_TABLE SET death_date=newDate WHERE author_id=a_id;
+END updateDeathDate;
+
+PROCEDURE RENEW (l_id NUMBER) AS
+BEGIN
+UPDATE LOANS_TABLE SET due_for_return=(due_for_return+14) WHERE loan_id=l_id;
+END renew;
+
+PROCEDURE return_copy (l_id NUMBER) IS
+l_user user_type;
+l_copy copy_type;
+l_copy_ref REF copy_type;
+b_title VARCHAR2(50);
+BEGIN
+UPDATE LOANS_TABLE l SET return_date=SYSDATE WHERE l.loan_id=l_id;
+
+SELECT l.copy_ref INTO l_copy_ref FROM LOANS_TABLE l WHERE l.loan_id=l_id;
+SELECT DEREF(l.copy_ref) INTO l_copy FROM LOANS_TABLE l WHERE l.loan_id=l_id;
+SELECT DEREF (c.user_ref) INTO l_user FROM COPY_TABLE C WHERE c.copy_id=l_copy.copy_id;
+SELECT TREAT (VALUE (u) AS user_type) INTO l_user FROM MEMBER_TABLE u WHERE u.member_id=l_user.member_id;
+
+l_copy_ref:=NULL;
+l_user.copy_ref:=l_copy_ref;
+UPDATE MEMBER_TABLE m SET VALUE(m)=l_user  WHERE m.member_id=l_user.member_id;
+
+SELECT B.title INTO b_title FROM BOOKS_TABLE B, TABLE (B.c_list)C WHERE C.copy_id=l_copy.copy_id;
+UPDATE COPY_TABLE c SET user_ref=NULL  WHERE c.copy_id=l_copy.copy_id;
+END return_copy;
+
+ FUNCTION new_book_loan (c_id IN NUMBER, u_id IN NUMBER, b_title VARCHAR2) RETURN VARCHAR2
+AS  l_copy copy_type;
+l_loan_ref REF loans_type;
+l_copy_ref REF copy_type;
+l_user_ref REF user_type;
+c_user user_type;
+seq NUMBER;
+
+BEGIN
+seq:=loans_seq.NEXTVAL;
+BEGIN
+SELECT VALUE (C) INTO l_copy FROM COPY_TABLE C WHERE C.copy_id=c_id;
+EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+   raise_application_error  (-20004, 'Error: Copy code ' ||
+   c_id || ' does not exist');
+   END;
+BEGIN
+SELECT TREAT(VALUE(u) as user_type) INTO c_user FROM MEMBER_TABLE u WHERE u.member_id=u_id;
+EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+   raise_application_error  (-20004, 'Error: User code ' ||
+   u_id || ' does not exist');
+   END;
+IF (l_copy.isBorrowed()='Not borrowed' AND c_user.showBook()='No copy borrowed') THEN
+BEGIN
+SELECT REF (c) INTO l_copy_ref FROM COPY_TABLE C WHERE c.copy_id=c_id;
+EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+   raise_application_error  (-20004, 'Error: Copy code ' ||
+   c_id || ' does not exist');
+   END;
+INSERT INTO LOANS_TABLE VALUES (seq, SYSDATE,SYSDATE+14,NULL, l_copy_ref);
+
+SELECT REF (l) INTO l_loan_ref FROM LOANS_TABLE l WHERE l.loan_id=seq;
+INSERT INTO TABLE (SELECT TREAT(VALUE(m) AS user_type).loans_list FROM MEMBER_TABLE m WHERE u_id=m.member_id) VALUES (l_loan_ref);
+
+SELECT TREAT(VALUE(u) as user_type) INTO c_user FROM MEMBER_TABLE u WHERE u.member_id=u_id;
+c_user.copy_ref:=l_copy_ref;
+UPDATE MEMBER_TABLE m SET VALUE(m)=c_user  WHERE m.member_id=u_id;
+
+SELECT TREAT(REF(u) as REF user_type)  INTO l_user_ref FROM MEMBER_TABLE u WHERE u.member_id=u_id;
+UPDATE COPY_TABLE  c SET user_ref=l_user_ref  WHERE c.copy_id=c_id;
+RETURN ('Loan created!');
+
+ELSE
+RETURN('The copy is borrowed, or user has already borrowed one copy');
+END IF;
+END new_book_loan;
+
+END Library_package;
+/
